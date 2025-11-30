@@ -14,6 +14,8 @@
 #include <Preferences.h>
 #include <Update.h>
 #include <HTTPUpdate.h>
+#include <Preferences.h>
+Preferences preferences;     // THIS LINE MUST BE HERE!
 
 // ===== Setup Mode Settings =====
 const char* AP_SSID = "MatrixClock-Setup";
@@ -306,39 +308,13 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   
-  // Check if setup button is pressed on boot to force setup mode
-  pinMode(SETUP_BUTTON_PIN, INPUT_PULLUP);
-  if (digitalRead(SETUP_BUTTON_PIN) == LOW) {
-    Serial.println("Setup button pressed - clearing all settings!");
-    preferences.begin("settings", false);
-    preferences.clear();
-    preferences.end();
-    
-    if(matrix.begin() == PROTOMATTER_OK) {
-      matrix.fillScreen(0);
-      matrix.setTextSize(1);
-      matrix.setTextColor(matrix.color565(255, 0, 0));
-      matrix.setCursor(2, 2);
-      matrix.print("Settings");
-      matrix.setCursor(2, 12);
-      matrix.print("Cleared!");
-      matrix.setCursor(2, 22);
-      matrix.print("Reboot...");
-      matrix.show();
-    }
-    
-    delay(2000);
-    ESP.restart();
-  }
-  
-  // ADD THIS: Setup manual update button
-  pinMode(UPDATE_BUTTON_PIN, INPUT_PULLUP);
-  
+  // Initialize matrix first
   if(matrix.begin() != PROTOMATTER_OK) {
     Serial.println("Matrix init FAILED!");
     while(1);
   }
   
+  // Initialize colors
   COLOR_CYAN = matrix.color565(0, 255, 255);
   COLOR_YELLOW = matrix.color565(255, 255, 0);
   COLOR_WHITE = matrix.color565(255, 255, 255);
@@ -348,7 +324,35 @@ void setup() {
   COLOR_ORANGE = matrix.color565(255, 128, 0);
   COLOR_PURPLE = matrix.color565(200, 0, 255);
   
+  // Setup buttons BEFORE using preferences
+  pinMode(SETUP_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(UPDATE_BUTTON_PIN, INPUT_PULLUP);
+  
+  // NOW initialize preferences
   preferences.begin("settings", false);
+  
+  // Check if setup button is pressed on boot to force setup mode
+  if (digitalRead(SETUP_BUTTON_PIN) == LOW) {
+    Serial.println("Setup button pressed - clearing all settings!");
+    preferences.clear();
+    preferences.end();
+    
+    matrix.fillScreen(0);
+    matrix.setTextSize(1);
+    matrix.setTextColor(COLOR_RED);
+    matrix.setCursor(2, 2);
+    matrix.print("Settings");
+    matrix.setCursor(2, 12);
+    matrix.print("Cleared!");
+    matrix.setCursor(2, 22);
+    matrix.print("Reboot...");
+    matrix.show();
+    
+    delay(2000);
+    ESP.restart();
+  }
+  
+  // Load saved settings
   saved_ssid = preferences.getString("ssid", "");
   saved_password = preferences.getString("password", "");
   saved_apiKey = preferences.getString("apikey", "");
@@ -362,7 +366,7 @@ void setup() {
     if (!connectToWiFi()) {
       enterSetupMode();
     } else {
-      // ADD THIS: Show version after WiFi connects
+      // Show version after WiFi connects
       displayFirmwareVersion();
       
       configTime(saved_timezone * 3600, 0, "pool.ntp.org");
@@ -370,7 +374,7 @@ void setup() {
       getWeather();
       getNFLScores();
       
-      // ADD THIS: Check for updates on startup
+      // Check for updates on startup
       Serial.println("Checking for firmware updates on startup...");
       checkForOTAUpdate();
     }
