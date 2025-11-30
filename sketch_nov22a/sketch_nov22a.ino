@@ -266,12 +266,20 @@ void loop() {
   // Update NFL scores - more frequently during game days
   unsigned long nflCheckInterval = nflUpdateInterval;
   
-  // Check if any games are live - update every 30 seconds if so
+  // Count game types and check for live games
   bool hasLiveGames = false;
+  int liveGameCount = 0;
+  int upcomingGameCount = 0;
+  int finalGameCount = 0;
+  
   for (int i = 0; i < gameCount; i++) {
     if (games[i].isLive) {
       hasLiveGames = true;
-      break;
+      liveGameCount++;
+    } else if (games[i].isUpcoming) {
+      upcomingGameCount++;
+    } else if (games[i].isFinal) {
+      finalGameCount++;
     }
   }
   
@@ -283,24 +291,45 @@ void loop() {
     getNFLScores();
   }
   
-  // Adjust mode duration based on game status and weather changes
+  // HEAVY FOCUS ON LIVE GAMES
   unsigned long currentModeDuration = MODE_DURATION;
   
   if (hasLiveGames) {
-    // During live games, show scores for much longer (60 seconds)
     if (currentMode == NFL_SCORES) {
-      currentModeDuration = 60000; // 60 seconds for live game scores
+      // Calculate cycle time with heavy live game focus
+      // Live games: 55 sec each (most time)
+      // Next upcoming: 6 sec (only show 1)
+      // Recent finals: 5 sec each (only show 2)
+      
+      int upcomingToShow = min(upcomingGameCount, 1);  // ONLY 1 upcoming
+      int finalsToShow = min(finalGameCount, 2);        // ONLY 2 finals
+      
+      unsigned long cycleTime = (liveGameCount * 55000) +   // 55 sec per live game
+                                (upcomingToShow * 6000) +    // 6 sec for 1 upcoming
+                                (finalsToShow * 5000);       // 5 sec per final (max 2)
+      
+      currentModeDuration = cycleTime;
+      
+      Serial.print("NFL cycle time: ");
+      Serial.print(cycleTime / 1000);
+      Serial.print(" seconds (");
+      Serial.print(liveGameCount);
+      Serial.print(" live [55s each], ");
+      Serial.print(upcomingToShow);
+      Serial.print(" upcoming [6s], ");
+      Serial.print(finalsToShow);
+      Serial.println(" final [5s each])");
+      
     } else {
-      // Only show weather briefly if it changed (5 seconds), otherwise skip
+      // CLOCK/WEATHER mode during live games
       if (weatherChanged) {
-        currentModeDuration = 5000; // 5 seconds to show weather change
+        currentModeDuration = 5000; // 5 seconds if weather changed
       } else {
-        // Skip weather entirely during live games if nothing changed
-        currentModeDuration = 0;
+        currentModeDuration = 0; // Skip entirely if no change
       }
     }
   } else {
-    // No live games - normal rotation
+    // No live games - normal rotation (show everything)
     currentModeDuration = 15000; // 15 seconds each
   }
   
@@ -309,7 +338,7 @@ void loop() {
     if (currentMode == CLOCK_WEATHER) {
       currentMode = NFL_SCORES;
       currentGameIndex = 0;
-      weatherChanged = false; // Reset weather change flag after showing it
+      weatherChanged = false;
       Serial.println("=== Switching to NFL Scores ===");
     } else {
       // Only switch back to clock/weather if weather changed OR no live games
@@ -317,23 +346,13 @@ void loop() {
         currentMode = CLOCK_WEATHER;
         Serial.println("=== Switching to Clock/Weather ===");
       } else {
-        // Stay on NFL scores, just reset the timer
+        // Stay on NFL scores, restart the cycle
         currentGameIndex = 0;
-        Serial.println("=== Staying on NFL Scores (no weather change) ===");
+        Serial.println("=== Restarting NFL cycle ===");
       }
     }
     
     modeChangeTime = millis();
-    
-    if (currentMode == NFL_SCORES && gameCount > 0) {
-      Serial.print("Showing game: ");
-      Serial.print(games[0].awayTeam);
-      Serial.print(" @ ");
-      Serial.print(games[0].homeTeam);
-      if (games[0].isLive) Serial.println(" [LIVE]");
-      else if (games[0].isUpcoming) Serial.println(" [UPCOMING]");
-      else if (games[0].isFinal) Serial.println(" [FINAL]");
-    }
   }
   
   if (currentMode == CLOCK_WEATHER) {
@@ -604,9 +623,19 @@ void displayNFLScores() {
   
   matrix.show();
   
-  // Cycle through games
+  // HEAVY FOCUS TIMING: Live games get most time
   static unsigned long lastGameSwitch = 0;
-  unsigned long switchInterval = game.isLive ? 3000 : 5000;
+  unsigned long switchInterval;
+  
+  if (game.isLive) {
+    switchInterval = 55000; // 55 seconds for LIVE games (MAXIMUM FOCUS)
+  } else if (game.isUpcoming) {
+    switchInterval = 6000;  // 6 seconds for UPCOMING games (brief)
+  } else if (game.isFinal) {
+    switchInterval = 5000;  // 5 seconds for FINAL games (very brief)
+  } else {
+    switchInterval = 5000;  // 5 seconds default
+  }
   
   if (millis() - lastGameSwitch > switchInterval) {
     currentGameIndex = (currentGameIndex + 1) % gameCount;
