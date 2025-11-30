@@ -5,3 +5,4 @@
 ![License](https://img.shields.io/github/license/markstamp/MatrixPortal-NFL-Clock?style=for-the-badge)
 
 A smart LED matrix display for ESP32-S3 showing clock, weather, and live NFL scores.
+## VS Code Setup Complete!
