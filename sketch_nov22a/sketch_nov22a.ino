@@ -12,8 +12,8 @@
 #include <ArduinoJson.h>
 #include <time.h>
 #include <Preferences.h>
-
-Preferences preferences;
+#include <Update.h>
+#include <HTTPUpdate.h>
 
 // ===== Setup Mode Settings =====
 const char* AP_SSID = "MatrixClock-Setup";
@@ -22,6 +22,15 @@ WebServer server(80);
 DNSServer dnsServer;
 bool setupMode = false;
 
+// ===== OTA Update Settings =====
+const char* FIRMWARE_VERSION = "1.3.0";  // Increment this with each release
+const char* GITHUB_FIRMWARE_URL = "https://github.com/markstamp/MatrixPortal-NFL-Clock/releases/latest/download/firmware.bin";
+unsigned long lastUpdateCheck = 0;
+const unsigned long updateCheckInterval = 21600000; // Check every 6 hours (6 * 60 * 60 * 1000)
+bool updateInProgress = false;
+
+// Optional: Manual update button
+const int UPDATE_BUTTON_PIN = 3; // GPIO 3 for manual update trigger
 // ===== Setup Button Pin =====
 const int SETUP_BUTTON_PIN = 0; // Change this to your button pin
 
@@ -163,6 +172,136 @@ void getWeather();
 void getNFLScores();
 void sortGamesByPriority();
 
+// ===== OTA UPDATE FUNCTIONS =====
+
+void checkForOTAUpdate() {
+  if (updateInProgress) return;
+  
+  Serial.println("Checking for firmware updates...");
+  
+  HTTPClient http;
+  http.begin("https://api.github.com/repos/markstamp/MatrixPortal-NFL-Clock/releases/latest");
+  http.addHeader("User-Agent", "MatrixPortal-NFL-Clock");
+  
+  int httpCode = http.GET();
+  
+  if (httpCode == 200) {
+    DynamicJsonDocument doc(4096);
+    DeserializationError error = deserializeJson(doc, http.getString());
+    
+    if (!error) {
+      String latestVersion = doc["tag_name"].as<String>();
+      latestVersion.replace("v", ""); // Remove 'v' prefix if present
+      
+      Serial.print("Current version: ");
+      Serial.println(FIRMWARE_VERSION);
+      Serial.print("Latest version: ");
+      Serial.println(latestVersion);
+      
+      if (latestVersion != FIRMWARE_VERSION && latestVersion.length() > 0) {
+        Serial.println("New version available! Starting update...");
+        performOTAUpdate();
+      } else {
+        Serial.println("Firmware is up to date.");
+      }
+    } else {
+      Serial.println("Failed to parse release info");
+    }
+  } else {
+    Serial.print("Failed to check for updates. HTTP code: ");
+    Serial.println(httpCode);
+  }
+  
+  http.end();
+  lastUpdateCheck = millis();
+}
+
+void performOTAUpdate() {
+  updateInProgress = true;
+  
+  // Show update message on display
+  matrix.fillScreen(0);
+  matrix.setTextSize(1);
+  matrix.setTextColor(COLOR_YELLOW);
+  matrix.setCursor(2, 2);
+  matrix.print("UPDATE");
+  matrix.setCursor(2, 12);
+  matrix.print("Loading");
+  matrix.setCursor(2, 22);
+  matrix.print("Please");
+  matrix.setCursor(2, 32);
+  matrix.print("Wait...");
+  matrix.show();
+  
+  Serial.println("Starting OTA update from: " + String(GITHUB_FIRMWARE_URL));
+  
+  WiFiClient client;
+  httpUpdate.setLedPin(LED_BUILTIN, LOW);
+  
+  // Register callback for progress
+  httpUpdate.onProgress([](int current, int total) {
+    Serial.printf("Progress: %d%%\n", (current * 100) / total);
+    
+    // Update progress bar on display
+    int barWidth = (current * 60) / total;
+    matrix.fillRect(2, 28, barWidth, 3, COLOR_GREEN);
+    matrix.show();
+  });
+  
+  t_httpUpdate_return ret = httpUpdate.update(client, GITHUB_FIRMWARE_URL);
+  
+  switch (ret) {
+    case HTTP_UPDATE_FAILED:
+      Serial.printf("Update failed. Error (%d): %s\n", 
+                    httpUpdate.getLastError(), 
+                    httpUpdate.getLastErrorString().c_str());
+      
+      matrix.fillScreen(0);
+      matrix.setTextColor(COLOR_RED);
+      matrix.setCursor(2, 12);
+      matrix.print("Update");
+      matrix.setCursor(2, 22);
+      matrix.print("Failed!");
+      matrix.show();
+      delay(3000);
+      
+      updateInProgress = false;
+      break;
+      
+    case HTTP_UPDATE_NO_UPDATES:
+      Serial.println("No update available");
+      updateInProgress = false;
+      break;
+      
+    case HTTP_UPDATE_OK:
+      Serial.println("Update successful! Rebooting...");
+      matrix.fillScreen(0);
+      matrix.setTextColor(COLOR_GREEN);
+      matrix.setCursor(2, 12);
+      matrix.print("Update");
+      matrix.setCursor(2, 22);
+      matrix.print("Success!");
+      matrix.show();
+      delay(2000);
+      ESP.restart();
+      break;
+  }
+}
+
+void displayFirmwareVersion() {
+  // Show version on display during startup
+  matrix.fillScreen(0);
+  matrix.setTextSize(1);
+  matrix.setTextColor(COLOR_CYAN);
+  matrix.setCursor(2, 2);
+  matrix.print("Version");
+  matrix.setTextColor(COLOR_WHITE);
+  matrix.setCursor(2, 12);
+  matrix.print(FIRMWARE_VERSION);
+  matrix.show();
+  delay(2000);
+}
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -175,7 +314,6 @@ void setup() {
     preferences.clear();
     preferences.end();
     
-    // Show message on display
     if(matrix.begin() == PROTOMATTER_OK) {
       matrix.fillScreen(0);
       matrix.setTextSize(1);
@@ -192,6 +330,9 @@ void setup() {
     delay(2000);
     ESP.restart();
   }
+  
+  // ADD THIS: Setup manual update button
+  pinMode(UPDATE_BUTTON_PIN, INPUT_PULLUP);
   
   if(matrix.begin() != PROTOMATTER_OK) {
     Serial.println("Matrix init FAILED!");
@@ -221,10 +362,17 @@ void setup() {
     if (!connectToWiFi()) {
       enterSetupMode();
     } else {
+      // ADD THIS: Show version after WiFi connects
+      displayFirmwareVersion();
+      
       configTime(saved_timezone * 3600, 0, "pool.ntp.org");
       delay(2000);
       getWeather();
       getNFLScores();
+      
+      // ADD THIS: Check for updates on startup
+      Serial.println("Checking for firmware updates on startup...");
+      checkForOTAUpdate();
     }
   }
 }
@@ -258,7 +406,14 @@ void loop() {
     delay(5000);
     return;
   }
+    // ADD THIS: Periodic update check (every 6 hours)
+  if (millis() - lastUpdateCheck > updateCheckInterval) {
+    checkForOTAUpdate();
+  }
   
+  if (millis() - lastWeatherUpdate > weatherUpdateInterval) {
+    getWeather();
+  }
   if (millis() - lastWeatherUpdate > weatherUpdateInterval) {
     getWeather();
   }
