@@ -25,7 +25,7 @@ DNSServer dnsServer;
 bool setupMode = false;
 
 // ===== OTA Update Settings =====
-const char* FIRMWARE_VERSION = "1.3.0";  // Increment this with each release
+const char* FIRMWARE_VERSION = "1.3.2";  // Increment this with each release
 const char* GITHUB_FIRMWARE_URL = "https://github.com/markstamp/MatrixPortal-NFL-Clock/releases/latest/download/firmware.bin";
 unsigned long lastUpdateCheck = 0;
 const unsigned long updateCheckInterval = 21600000; // Check every 6 hours (6 * 60 * 60 * 1000)
@@ -65,6 +65,18 @@ const unsigned long weatherUpdateInterval = 600000;
 String lastWeatherDescription = "";  // ADD THIS LINE
 float lastTemperature = 0.0;         // ADD THIS LINE
 bool weatherChanged = false;          // ADD THIS LINE
+
+// ===== Touchdown Detection =====
+struct TouchdownEvent {
+  bool active;
+  String team;
+  unsigned long startTime;
+  int awayScoreBefore;
+  int homeScoreBefore;
+};
+
+TouchdownEvent touchdown = {false, "", 0, 0, 0};
+const unsigned long TOUCHDOWN_ANIMATION_DURATION = 5000; // 5 seconds
 
 struct NFLGame {
   String awayTeam, homeTeam, status;
@@ -405,19 +417,27 @@ void loop() {
     return;
   }
   
+  // Check for manual update button press
+  static unsigned long lastUpdateButtonPress = 0;
+  if (digitalRead(UPDATE_BUTTON_PIN) == LOW) {
+    if (millis() - lastUpdateButtonPress > 1000) { // Debounce
+      Serial.println("Manual update triggered!");
+      checkForOTAUpdate();
+      lastUpdateButtonPress = millis();
+    }
+  }
+  
   if (WiFi.status() != WL_CONNECTED) {
     showWiFiError();
     delay(5000);
     return;
   }
-    // ADD THIS: Periodic update check (every 6 hours)
+  
+  // Periodic update check (every 6 hours)
   if (millis() - lastUpdateCheck > updateCheckInterval) {
     checkForOTAUpdate();
   }
   
-  if (millis() - lastWeatherUpdate > weatherUpdateInterval) {
-    getWeather();
-  }
   if (millis() - lastWeatherUpdate > weatherUpdateInterval) {
     getWeather();
   }
@@ -450,22 +470,19 @@ void loop() {
     getNFLScores();
   }
   
-  // HEAVY FOCUS ON LIVE GAMES
+  // TIMING LOGIC - Show ALL games, but with different durations
   unsigned long currentModeDuration = MODE_DURATION;
   
   if (hasLiveGames) {
     if (currentMode == NFL_SCORES) {
-      // Calculate cycle time with heavy live game focus
-      // Live games: 55 sec each (most time)
-      // Next upcoming: 6 sec (only show 1)
-      // Recent finals: 5 sec each (only show 2)
+      // Calculate total cycle time for ALL games
+      // Live games get 55 seconds each
+      // Upcoming games get 15 seconds each
+      // Final games get 5 seconds each
       
-      int upcomingToShow = min(upcomingGameCount, 1);  // ONLY 1 upcoming
-      int finalsToShow = min(finalGameCount, 2);        // ONLY 2 finals
-      
-      unsigned long cycleTime = (liveGameCount * 55000) +   // 55 sec per live game
-                                (upcomingToShow * 6000) +    // 6 sec for 1 upcoming
-                                (finalsToShow * 5000);       // 5 sec per final (max 2)
+      unsigned long cycleTime = (liveGameCount * 55000) +      // 55 sec per live game
+                                (upcomingGameCount * 15000) +   // 15 sec per upcoming game
+                                (finalGameCount * 5000);        // 5 sec per final game
       
       currentModeDuration = cycleTime;
       
@@ -473,11 +490,11 @@ void loop() {
       Serial.print(cycleTime / 1000);
       Serial.print(" seconds (");
       Serial.print(liveGameCount);
-      Serial.print(" live [55s each], ");
-      Serial.print(upcomingToShow);
-      Serial.print(" upcoming [6s], ");
-      Serial.print(finalsToShow);
-      Serial.println(" final [5s each])");
+      Serial.print(" live [55s], ");
+      Serial.print(upcomingGameCount);
+      Serial.print(" upcoming [15s], ");
+      Serial.print(finalGameCount);
+      Serial.println(" final [5s])");
       
     } else {
       // CLOCK/WEATHER mode during live games
@@ -488,7 +505,7 @@ void loop() {
       }
     }
   } else {
-    // No live games - normal rotation (show everything)
+    // No live games - normal rotation
     currentModeDuration = 15000; // 15 seconds each
   }
   
@@ -496,18 +513,21 @@ void loop() {
     // Switch modes
     if (currentMode == CLOCK_WEATHER) {
       currentMode = NFL_SCORES;
-      currentGameIndex = 0;
+      currentGameIndex = 0;  // Start at first game when entering NFL mode
       weatherChanged = false;
       Serial.println("=== Switching to NFL Scores ===");
+      Serial.print("Will display ");
+      Serial.print(gameCount);
+      Serial.println(" total games");
     } else {
       // Only switch back to clock/weather if weather changed OR no live games
       if (weatherChanged || !hasLiveGames) {
         currentMode = CLOCK_WEATHER;
         Serial.println("=== Switching to Clock/Weather ===");
       } else {
-        // Stay on NFL scores, restart the cycle
-        currentGameIndex = 0;
-        Serial.println("=== Restarting NFL cycle ===");
+        // Stay on NFL scores - continue cycling through ALL games
+        Serial.println("=== Continuing NFL cycle (no weather change) ===");
+        // DON'T reset currentGameIndex - let it keep cycling
       }
     }
     
@@ -665,8 +685,125 @@ void displayClockAndWeather() {
   drawWeatherIcon();
   matrix.show();
 }
+// ===== TOUCHDOWN DETECTION =====
 
+void checkForTouchdown() {
+  // Only check during live games
+  for (int i = 0; i < gameCount; i++) {
+    if (games[i].isLive) {
+      // Check if this is the game we're tracking
+      if (i == currentGameIndex) {
+        int awayScore = games[i].awayScore;
+        int homeScore = games[i].homeScore;
+        
+        // First time seeing this game - initialize tracking
+        if (touchdown.awayScoreBefore == 0 && touchdown.homeScoreBefore == 0) {
+          touchdown.awayScoreBefore = awayScore;
+          touchdown.homeScoreBefore = homeScore;
+          return;
+        }
+        
+        // Check for away team touchdown (6+ point increase)
+        if (awayScore >= touchdown.awayScoreBefore + 6) {
+          touchdown.active = true;
+          touchdown.team = games[i].awayTeam;
+          touchdown.startTime = millis();
+          touchdown.awayScoreBefore = awayScore;
+          touchdown.homeScoreBefore = homeScore;
+          
+          Serial.print("🏈 TOUCHDOWN! ");
+          Serial.print(touchdown.team);
+          Serial.print(" scored! New score: ");
+          Serial.print(awayScore);
+          Serial.print("-");
+          Serial.println(homeScore);
+          return;
+        }
+        
+        // Check for home team touchdown (6+ point increase)
+        if (homeScore >= touchdown.homeScoreBefore + 6) {
+          touchdown.active = true;
+          touchdown.team = games[i].homeTeam;
+          touchdown.startTime = millis();
+          touchdown.awayScoreBefore = awayScore;
+          touchdown.homeScoreBefore = homeScore;
+          
+          Serial.print("🏈 TOUCHDOWN! ");
+          Serial.print(touchdown.team);
+          Serial.print(" scored! New score: ");
+          Serial.print(awayScore);
+          Serial.print("-");
+          Serial.println(homeScore);
+          return;
+        }
+        
+        // Update tracking scores (for field goals, safeties, etc.)
+        if (awayScore != touchdown.awayScoreBefore || homeScore != touchdown.homeScoreBefore) {
+          touchdown.awayScoreBefore = awayScore;
+          touchdown.homeScoreBefore = homeScore;
+        }
+      }
+    }
+  }
+}
+
+// ===== TOUCHDOWN ANIMATION =====
+
+void displayTouchdownAnimation() {
+  // Calculate elapsed time
+  unsigned long elapsed = millis() - touchdown.startTime;
+  
+  // Animation is done after 5 seconds
+  if (elapsed > TOUCHDOWN_ANIMATION_DURATION) {
+    touchdown.active = false;
+    return;
+  }
+  
+  // Blink effect: on for 500ms, off for 500ms
+  bool blinkOn = (elapsed % 1000) < 500;
+  
+  matrix.fillScreen(0);
+  
+  if (blinkOn) {
+    // Get team colors
+    uint16_t teamColor = getTeamPrimaryColor(touchdown.team);
+    uint16_t accentColor = getTeamSecondaryColor(touchdown.team);
+    
+    // Flash background with team color
+    matrix.fillScreen(teamColor);
+    
+    // Draw "TOUCHDOWN!" text
+    matrix.setTextSize(1);
+    matrix.setTextColor(accentColor);
+    
+    // Line 1: Team abbreviation
+    matrix.setCursor(16, 2);
+    matrix.print(touchdown.team);
+    
+    // Line 2: "TOUCH"
+    matrix.setCursor(4, 12);
+    matrix.print("TOUCH");
+    
+    // Line 3: "DOWN!"
+    matrix.setCursor(4, 22);
+    matrix.print("DOWN!");
+  } else {
+    // Blink off - show black screen
+    matrix.fillScreen(0);
+  }
+  
+  matrix.show();
+}
 void displayNFLScores() {
+  // CHECK FOR TOUCHDOWN ANIMATION FIRST
+  if (touchdown.active) {
+    displayTouchdownAnimation();
+    return; // Don't show normal score display during animation
+  }
+  
+  // Check for new touchdowns in current game
+  checkForTouchdown();
+  
   matrix.fillScreen(0);
   
   if (gameCount == 0) {
@@ -682,77 +819,70 @@ void displayNFLScores() {
   matrix.setTextSize(1);
   
   if (game.isLive) {
-    // LIVE GAME - Top bar with status
+    // LIVE GAME - Red status bar
     matrix.fillRect(0, 0, 64, 8, COLOR_RED);
     matrix.setTextColor(COLOR_WHITE);
     matrix.setCursor(20, 1);
     matrix.print("LIVE");
     
-    // Away team and score - centered layout
-    matrix.setTextColor(COLOR_WHITE);
-    matrix.setCursor(4, 12);
-    matrix.print(game.awayTeam);
+    // Away team - colored box with team abbreviation
+    drawTeamBox(game.awayTeam, 2, 10, 22, 9);
     
+    // Away score
     matrix.setTextColor(COLOR_YELLOW);
-    matrix.setCursor(48, 12);
+    matrix.setCursor(26, 11);
     matrix.print(game.awayScore);
     
-    // Home team and score
-    matrix.setTextColor(COLOR_WHITE);
-    matrix.setCursor(4, 22);
-    matrix.print(game.homeTeam);
+    // Home team - colored box with team abbreviation
+    drawTeamBox(game.homeTeam, 2, 21, 22, 9);
     
+    // Home score
     matrix.setTextColor(COLOR_YELLOW);
-    matrix.setCursor(48, 22);
+    matrix.setCursor(26, 22);
     matrix.print(game.homeScore);
     
   } else if (game.isFinal) {
-    // FINAL GAME - Top bar
+    // FINAL GAME - Green status bar
     matrix.fillRect(0, 0, 64, 8, COLOR_GREEN);
     matrix.setTextColor(COLOR_WHITE);
     matrix.setCursor(18, 1);
     matrix.print("FINAL");
     
-    // Away team and score
-    matrix.setTextColor(COLOR_WHITE);
-    matrix.setCursor(4, 12);
-    matrix.print(game.awayTeam);
+    // Away team - colored box
+    drawTeamBox(game.awayTeam, 2, 10, 22, 9);
     
-    matrix.setTextColor(COLOR_YELLOW);
-    matrix.setCursor(48, 12);
+    // Away score
+    matrix.setTextColor(COLOR_WHITE);
+    matrix.setCursor(26, 11);
     matrix.print(game.awayScore);
     
-    // Home team and score
-    matrix.setTextColor(COLOR_WHITE);
-    matrix.setCursor(4, 22);
-    matrix.print(game.homeTeam);
+    // Home team - colored box
+    drawTeamBox(game.homeTeam, 2, 21, 22, 9);
     
-    matrix.setTextColor(COLOR_YELLOW);
-    matrix.setCursor(48, 22);
+    // Home score
+    matrix.setTextColor(COLOR_WHITE);
+    matrix.setCursor(26, 22);
     matrix.print(game.homeScore);
     
   } else if (game.isUpcoming) {
-    // UPCOMING GAME - Top bar
+    // UPCOMING GAME - Cyan status bar
     matrix.fillRect(0, 0, 64, 8, COLOR_CYAN);
     matrix.setTextColor(COLOR_WHITE);
     matrix.setCursor(12, 1);
     matrix.print("UPCOMING");
     
-    // Away team
-    matrix.setTextColor(COLOR_WHITE);
-    matrix.setCursor(4, 12);
-    matrix.print(game.awayTeam);
+    // Away team - colored box
+    drawTeamBox(game.awayTeam, 2, 10, 22, 9);
     
-    matrix.setTextColor(COLOR_YELLOW);
-    matrix.setCursor(28, 12);
+    // "at" text
+    matrix.setTextColor(COLOR_WHITE);
+    matrix.setCursor(26, 11);
     matrix.print("at");
     
-    // Home team
-    matrix.setTextColor(COLOR_WHITE);
-    matrix.setCursor(4, 22);
-    matrix.print(game.homeTeam);
+    // Home team - colored box
+    drawTeamBox(game.homeTeam, 2, 21, 22, 9);
     
-    // Game time - clean format
+    // Game time - right aligned
     if (game.gameTime.length() > 0) {
       matrix.setTextColor(COLOR_YELLOW);
       String displayTime = game.gameTime;
@@ -765,8 +895,8 @@ void displayNFLScores() {
       // Right-align the time
       int timeWidth = displayTime.length() * 6;
       int xPos = 62 - timeWidth;
-      if (xPos < 32) {
-        // If too long, truncate date and just show time
+      if (xPos < 26) {
+        // If too long, just show time
         int spacePos = displayTime.lastIndexOf(' ');
         if (spacePos > 0) {
           displayTime = displayTime.substring(spacePos + 1);
@@ -782,23 +912,58 @@ void displayNFLScores() {
   
   matrix.show();
   
-  // HEAVY FOCUS TIMING: Live games get most time
+  // CRITICAL: Use separate static timer for game switching
   static unsigned long lastGameSwitch = 0;
+  static int lastGameIndex = -1;
+  
+  // Reset timer if we just switched modes or game index changed externally
+  if (lastGameIndex != currentGameIndex) {
+    lastGameSwitch = millis();
+    lastGameIndex = currentGameIndex;
+    
+    // RESET TOUCHDOWN TRACKING when switching games
+    touchdown.awayScoreBefore = 0;
+    touchdown.homeScoreBefore = 0;
+    
+    // Debug output
+    Serial.print("Displaying game ");
+    Serial.print(currentGameIndex + 1);
+    Serial.print("/");
+    Serial.print(gameCount);
+    Serial.print(": ");
+    Serial.print(game.awayTeam);
+    Serial.print(" @ ");
+    Serial.print(game.homeTeam);
+    if (game.isLive) Serial.println(" [LIVE - will show for 55 seconds]");
+    else if (game.isUpcoming) Serial.println(" [UPCOMING - will show for 15 seconds]");
+    else if (game.isFinal) Serial.println(" [FINAL - will show for 5 seconds]");
+  }
+  
+  // Determine how long to show this game
   unsigned long switchInterval;
   
   if (game.isLive) {
-    switchInterval = 55000; // 55 seconds for LIVE games (MAXIMUM FOCUS)
+    switchInterval = 55000; // 55 seconds for LIVE games
   } else if (game.isUpcoming) {
-    switchInterval = 6000;  // 6 seconds for UPCOMING games (brief)
+    switchInterval = 15000; // 15 seconds for UPCOMING games
   } else if (game.isFinal) {
-    switchInterval = 5000;  // 5 seconds for FINAL games (very brief)
+    switchInterval = 5000;  // 5 seconds for FINAL games
   } else {
     switchInterval = 5000;  // 5 seconds default
   }
   
-  if (millis() - lastGameSwitch > switchInterval) {
+  // Only switch to next game after the interval has passed
+  // UNLESS touchdown animation is active (then pause game switching)
+  if (!touchdown.active && millis() - lastGameSwitch >= switchInterval) {
+    Serial.print("Switching from game ");
+    Serial.print(currentGameIndex + 1);
+    Serial.print(" to ");
+    
     currentGameIndex = (currentGameIndex + 1) % gameCount;
     lastGameSwitch = millis();
+    lastGameIndex = currentGameIndex;
+    
+    Serial.println(currentGameIndex + 1);
   }
 }
 
@@ -952,7 +1117,128 @@ void sortGamesByPriority() {
     }
   }
 }
+// ===== TEAM COLOR FUNCTIONS =====
 
+// Get primary team color
+uint16_t getTeamPrimaryColor(String team) {
+  // AFC East
+  if (team == "BUF") return matrix.color565(0, 51, 141);      // Bills Blue
+  if (team == "MIA") return matrix.color565(0, 142, 151);     // Dolphins Aqua
+  if (team == "NE")  return matrix.color565(0, 34, 68);       // Patriots Navy
+  if (team == "NYJ") return matrix.color565(18, 87, 64);      // Jets Green
+  
+  // AFC North
+  if (team == "BAL") return matrix.color565(26, 25, 95);      // Ravens Purple
+  if (team == "CIN") return matrix.color565(251, 79, 20);     // Bengals Orange
+  if (team == "CLE") return matrix.color565(49, 29, 0);       // Browns Brown
+  if (team == "PIT") return matrix.color565(255, 182, 18);    // Steelers Gold
+  
+  // AFC South
+  if (team == "HOU") return matrix.color565(3, 32, 47);       // Texans Navy
+  if (team == "IND") return matrix.color565(0, 44, 95);       // Colts Blue
+  if (team == "JAX") return matrix.color565(0, 103, 120);     // Jaguars Teal
+  if (team == "TEN") return matrix.color565(12, 35, 64);      // Titans Navy
+  
+  // AFC West
+  if (team == "DEN") return matrix.color565(251, 79, 20);     // Broncos Orange
+  if (team == "KC")  return matrix.color565(227, 24, 55);     // Chiefs Red
+  if (team == "LV")  return matrix.color565(0, 0, 0);         // Raiders Black
+  if (team == "LAC") return matrix.color565(0, 128, 198);     // Chargers Blue
+  
+  // NFC East
+  if (team == "DAL") return matrix.color565(0, 34, 68);       // Cowboys Blue
+  if (team == "NYG") return matrix.color565(1, 35, 82);       // Giants Blue
+  if (team == "PHI") return matrix.color565(0, 76, 84);       // Eagles Green
+  if (team == "WAS") return matrix.color565(90, 20, 20);      // Commanders Burgundy
+  
+  // NFC North
+  if (team == "CHI") return matrix.color565(11, 22, 42);      // Bears Navy
+  if (team == "DET") return matrix.color565(0, 118, 182);     // Lions Blue
+  if (team == "GB")  return matrix.color565(24, 48, 40);      // Packers Green
+  if (team == "MIN") return matrix.color565(79, 38, 131);     // Vikings Purple
+  
+  // NFC South
+  if (team == "ATL") return matrix.color565(167, 25, 48);     // Falcons Red
+  if (team == "CAR") return matrix.color565(0, 133, 202);     // Panthers Blue
+  if (team == "NO")  return matrix.color565(211, 188, 141);   // Saints Gold
+  if (team == "TB")  return matrix.color565(213, 10, 10);     // Buccaneers Red
+  
+  // NFC West
+  if (team == "ARI") return matrix.color565(151, 35, 63);     // Cardinals Red
+  if (team == "LAR") return matrix.color565(0, 53, 148);      // Rams Blue
+  if (team == "SF")  return matrix.color565(170, 0, 0);       // 49ers Red
+  if (team == "SEA") return matrix.color565(0, 34, 68);       // Seahawks Navy
+  
+  return COLOR_WHITE; // Default if team not found
+}
+
+// Get secondary/accent team color
+uint16_t getTeamSecondaryColor(String team) {
+  // AFC East
+  if (team == "BUF") return matrix.color565(198, 12, 48);     // Bills Red
+  if (team == "MIA") return matrix.color565(252, 76, 2);      // Dolphins Orange
+  if (team == "NE")  return matrix.color565(198, 12, 48);     // Patriots Red
+  if (team == "NYJ") return matrix.color565(255, 255, 255);   // Jets White
+  
+  // AFC North
+  if (team == "BAL") return matrix.color565(158, 124, 12);    // Ravens Gold
+  if (team == "CIN") return matrix.color565(0, 0, 0);         // Bengals Black
+  if (team == "CLE") return matrix.color565(255, 60, 0);      // Browns Orange
+  if (team == "PIT") return matrix.color565(0, 0, 0);         // Steelers Black
+  
+  // AFC South
+  if (team == "HOU") return matrix.color565(167, 25, 48);     // Texans Red
+  if (team == "IND") return matrix.color565(255, 255, 255);   // Colts White
+  if (team == "JAX") return matrix.color565(159, 121, 44);    // Jaguars Gold
+  if (team == "TEN") return matrix.color565(75, 146, 219);    // Titans Light Blue
+  
+  // AFC West
+  if (team == "DEN") return matrix.color565(0, 34, 68);       // Broncos Navy
+  if (team == "KC")  return matrix.color565(255, 184, 28);    // Chiefs Gold
+  if (team == "LV")  return matrix.color565(165, 172, 175);   // Raiders Silver
+  if (team == "LAC") return matrix.color565(255, 194, 14);    // Chargers Gold
+  
+  // NFC East
+  if (team == "DAL") return matrix.color565(134, 147, 151);   // Cowboys Silver
+  if (team == "NYG") return matrix.color565(163, 13, 45);     // Giants Red
+  if (team == "PHI") return matrix.color565(165, 172, 175);   // Eagles Silver
+  if (team == "WAS") return matrix.color565(255, 182, 18);    // Commanders Gold
+  
+  // NFC North
+  if (team == "CHI") return matrix.color565(200, 56, 3);      // Bears Orange
+  if (team == "DET") return matrix.color565(176, 183, 188);   // Lions Silver
+  if (team == "GB")  return matrix.color565(255, 184, 28);    // Packers Gold
+  if (team == "MIN") return matrix.color565(255, 198, 47);    // Vikings Gold
+  
+  // NFC South
+  if (team == "ATL") return matrix.color565(0, 0, 0);         // Falcons Black
+  if (team == "CAR") return matrix.color565(0, 0, 0);         // Panthers Black
+  if (team == "NO")  return matrix.color565(0, 0, 0);         // Saints Black
+  if (team == "TB")  return matrix.color565(255, 121, 0);     // Buccaneers Orange
+  
+  // NFC West
+  if (team == "ARI") return matrix.color565(255, 182, 18);    // Cardinals Gold
+  if (team == "LAR") return matrix.color565(255, 209, 0);     // Rams Gold
+  if (team == "SF")  return matrix.color565(173, 153, 93);    // 49ers Gold
+  if (team == "SEA") return matrix.color565(105, 190, 40);    // Seahawks Green
+  
+  return COLOR_YELLOW; // Default
+}
+
+// Draw team name box with team colors
+void drawTeamBox(String team, int x, int y, int width, int height) {
+  uint16_t primaryColor = getTeamPrimaryColor(team);
+  uint16_t secondaryColor = getTeamSecondaryColor(team);
+  
+  // Draw colored background box
+  matrix.fillRect(x, y, width, height, primaryColor);
+  
+  // Draw team abbreviation in secondary color
+  matrix.setTextColor(secondaryColor);
+  matrix.setTextSize(1);
+  matrix.setCursor(x + 2, y + 2);
+  matrix.print(team);
+}
 void getNFLScores() {
   HTTPClient http;
   
