@@ -14,8 +14,7 @@
 #include <Preferences.h>
 #include <Update.h>
 #include <HTTPUpdate.h>
-#include <Preferences.h>
-Preferences preferences;     // THIS LINE MUST BE HERE!
+Preferences preferences;  // Must be at global scope before setup()
 
 // ===== Setup Mode Settings =====
 const char* AP_SSID = "MatrixClock-Setup";
@@ -62,20 +61,21 @@ String weatherDescription = "";
 float temperature = 0.0;
 unsigned long lastWeatherUpdate = 0;
 const unsigned long weatherUpdateInterval = 600000;
-String lastWeatherDescription = "";  // ADD THIS LINE
-float lastTemperature = 0.0;         // ADD THIS LINE
-bool weatherChanged = false;          // ADD THIS LINE
+String lastWeatherDescription = "";
+float lastTemperature = 0.0;
+bool weatherChanged = false;
 
 // ===== Touchdown Detection =====
 struct TouchdownEvent {
   bool active;
+  bool initialized;
   String team;
   unsigned long startTime;
   int awayScoreBefore;
   int homeScoreBefore;
 };
 
-TouchdownEvent touchdown = {false, "", 0, 0, 0};
+TouchdownEvent touchdown = {false, false, "", 0, 0, 0};
 const unsigned long TOUCHDOWN_ANIMATION_DURATION = 5000; // 5 seconds
 
 struct NFLGame {
@@ -429,7 +429,18 @@ void loop() {
   
   if (WiFi.status() != WL_CONNECTED) {
     showWiFiError();
-    delay(5000);
+    delay(2000);
+    Serial.println("Attempting WiFi reconnection...");
+    WiFi.disconnect();
+    WiFi.begin(saved_ssid.c_str(), saved_password.c_str());
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 10) {
+      delay(500);
+      attempts++;
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("WiFi reconnected!");
+    }
     return;
   }
   
@@ -697,9 +708,10 @@ void checkForTouchdown() {
         int homeScore = games[i].homeScore;
         
         // First time seeing this game - initialize tracking
-        if (touchdown.awayScoreBefore == 0 && touchdown.homeScoreBefore == 0) {
+        if (!touchdown.initialized) {
           touchdown.awayScoreBefore = awayScore;
           touchdown.homeScoreBefore = homeScore;
+          touchdown.initialized = true;
           return;
         }
         
@@ -815,7 +827,7 @@ void displayNFLScores() {
     return;
   }
   
-  NFLGame game = games[currentGameIndex];
+  NFLGame& game = games[currentGameIndex];
   matrix.setTextSize(1);
   
   if (game.isLive) {
@@ -924,6 +936,7 @@ void displayNFLScores() {
     // RESET TOUCHDOWN TRACKING when switching games
     touchdown.awayScoreBefore = 0;
     touchdown.homeScoreBefore = 0;
+    touchdown.initialized = false;
     
     // Debug output
     Serial.print("Displaying game ");
@@ -987,16 +1000,16 @@ void getWeather() {
   if (saved_apiKey.length() == 0) return;
   
   HTTPClient http;
-  String url = "http://api.openweathermap.org/data/2.5/weather?q=" + saved_city + "," + 
+  String url = "https://api.openweathermap.org/data/2.5/weather?q=" + saved_city + "," +
                saved_country + "&units=imperial&appid=" + saved_apiKey;
   
   http.begin(url);
   int httpCode = http.GET();
-  
-  if (httpCode > 0) {
+
+  if (httpCode == 200) {
     DynamicJsonDocument doc(4096);
     DeserializationError error = deserializeJson(doc, http.getString());
-    
+
     if (!error) {
       float newTemp = doc["main"]["temp"] | 0.0;
       String newDesc = doc["weather"][0]["description"].as<String>();
@@ -1016,10 +1029,10 @@ void getWeather() {
       }
       
       // Update values
-      lastTemperature = temperature;
-      lastWeatherDescription = weatherDescription;
       temperature = newTemp;
       weatherDescription = newDesc;
+      lastTemperature = newTemp;
+      lastWeatherDescription = newDesc;
       lastWeatherUpdate = millis();
       
       Serial.print("Weather: ");
@@ -1120,7 +1133,7 @@ void sortGamesByPriority() {
 // ===== TEAM COLOR FUNCTIONS =====
 
 // Get primary team color
-uint16_t getTeamPrimaryColor(String team) {
+uint16_t getTeamPrimaryColor(const String& team) {
   // AFC East
   if (team == "BUF") return matrix.color565(0, 51, 141);      // Bills Blue
   if (team == "MIA") return matrix.color565(0, 142, 151);     // Dolphins Aqua
@@ -1173,7 +1186,7 @@ uint16_t getTeamPrimaryColor(String team) {
 }
 
 // Get secondary/accent team color
-uint16_t getTeamSecondaryColor(String team) {
+uint16_t getTeamSecondaryColor(const String& team) {
   // AFC East
   if (team == "BUF") return matrix.color565(198, 12, 48);     // Bills Red
   if (team == "MIA") return matrix.color565(252, 76, 2);      // Dolphins Orange
@@ -1226,7 +1239,7 @@ uint16_t getTeamSecondaryColor(String team) {
 }
 
 // Draw team name box with team colors
-void drawTeamBox(String team, int x, int y, int width, int height) {
+void drawTeamBox(const String& team, int x, int y, int width, int height) {
   uint16_t primaryColor = getTeamPrimaryColor(team);
   uint16_t secondaryColor = getTeamSecondaryColor(team);
   
@@ -1242,12 +1255,12 @@ void drawTeamBox(String team, int x, int y, int width, int height) {
 void getNFLScores() {
   HTTPClient http;
   
-  http.begin("http://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard");
+  http.begin("https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard");
   http.setTimeout(10000);
-  
+
   int httpCode = http.GET();
-  
-  if (httpCode > 0) {
+
+  if (httpCode == 200) {
     WiFiClient* stream = http.getStreamPtr();
     String payload = stream->readString();
     
@@ -1397,10 +1410,22 @@ void getNFLScores() {
           int hour = dateStr.substring(11, 13).toInt();
           int minute = dateStr.substring(14, 16).toInt();
           
-          // Adjust for timezone
+          // Adjust for timezone (handle day rollover)
           hour += saved_timezone;
-          if (hour < 0) hour += 24;
-          if (hour >= 24) hour -= 24;
+          if (hour < 0) {
+            hour += 24;
+            day -= 1;
+            if (day < 1) {
+              month -= 1;
+              if (month < 1) month = 12;
+              // Approximate days in previous month
+              int daysInMonth[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+              day = daysInMonth[month - 1];
+            }
+          } else if (hour >= 24) {
+            hour -= 24;
+            day += 1;
+          }
           
           String ampm = (hour >= 12) ? "PM" : "AM";
           if (hour > 12) hour -= 12;
