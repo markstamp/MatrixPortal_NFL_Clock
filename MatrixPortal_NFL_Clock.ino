@@ -24,7 +24,7 @@ DNSServer dnsServer;
 bool setupMode = false;
 
 // ===== OTA Update Settings =====
-const char* FIRMWARE_VERSION = "1.3.2";  // Increment this with each release
+const char* FIRMWARE_VERSION = "1.4.0";  // Increment this with each release
 const char* GITHUB_FIRMWARE_URL = "https://github.com/markstamp/MatrixPortal-NFL-Clock/releases/latest/download/firmware.bin";
 unsigned long lastUpdateCheck = 0;
 const unsigned long updateCheckInterval = 21600000; // Check every 6 hours (6 * 60 * 60 * 1000)
