@@ -24,8 +24,8 @@ DNSServer dnsServer;
 bool setupMode = false;
 
 // ===== OTA Update Settings =====
-const char* FIRMWARE_VERSION = "1.5.0";  // Increment this with each release
-const char* GITHUB_FIRMWARE_URL = "https://github.com/markstamp/MatrixPortal-NFL-Clock/releases/latest/download/firmware.bin";
+const char* FIRMWARE_VERSION = "1.5.1";  // Increment this with each release
+const char* GITHUB_FIRMWARE_URL = "https://github.com/markstamp/MatrixPortal_NFL_Clock/releases/latest/download/firmware.bin";
 unsigned long lastUpdateCheck = 0;
 const unsigned long updateCheckInterval = 21600000; // Check every 6 hours (6 * 60 * 60 * 1000)
 bool updateInProgress = false;
@@ -201,7 +201,7 @@ void checkForOTAUpdate() {
   Serial.println("Checking for firmware updates...");
   
   HTTPClient http;
-  http.begin("https://api.github.com/repos/markstamp/MatrixPortal-NFL-Clock/releases/latest");
+  http.begin("https://api.github.com/repos/markstamp/MatrixPortal_NFL_Clock/releases/latest");
   http.addHeader("User-Agent", "MatrixPortal-NFL-Clock");
   
   int httpCode = http.GET();
