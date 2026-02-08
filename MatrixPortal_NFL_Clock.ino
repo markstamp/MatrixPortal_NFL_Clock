@@ -24,7 +24,7 @@ DNSServer dnsServer;
 bool setupMode = false;
 
 // ===== OTA Update Settings =====
-const char* FIRMWARE_VERSION = "1.5.1";  // Increment this with each release
+const char* FIRMWARE_VERSION = "1.5.2";  // Increment this with each release
 const char* GITHUB_FIRMWARE_URL = "https://github.com/markstamp/MatrixPortal_NFL_Clock/releases/latest/download/firmware.bin";
 unsigned long lastUpdateCheck = 0;
 const unsigned long updateCheckInterval = 21600000; // Check every 6 hours (6 * 60 * 60 * 1000)
@@ -1362,32 +1362,36 @@ void displayOlympicsMedals() {
 
   // Row 1: Header
   matrix.setTextColor(COLOR_CYAN);
-  matrix.setCursor(2, 1);
-  matrix.print("USA MEDALS");
+  matrix.setCursor(5, 1);
+  matrix.print("USA 2026");
 
-  // Row 2: Gold count
+  // Row 2: Medal counts with colored circle indicators
+  // Gold: filled circle + count
   uint16_t COLOR_GOLD = matrix.color565(255, 215, 0);
+  matrix.fillCircle(4, 14, 2, COLOR_GOLD);
   matrix.setTextColor(COLOR_GOLD);
-  matrix.setCursor(2, 11);
-  matrix.print("G:");
+  matrix.setCursor(9, 11);
   matrix.print(usaGold);
 
-  // Silver count
-  matrix.setTextColor(COLOR_WHITE);
-  matrix.setCursor(26, 11);
-  matrix.print("S:");
+  // Silver: filled circle + count
+  uint16_t COLOR_SILVER = matrix.color565(192, 192, 192);
+  matrix.fillCircle(25, 14, 2, COLOR_SILVER);
+  matrix.setTextColor(COLOR_SILVER);
+  matrix.setCursor(30, 11);
   matrix.print(usaSilver);
 
-  // Bronze count
-  matrix.setTextColor(COLOR_ORANGE);
-  matrix.setCursor(50, 11);
-  matrix.print("B:");
+  // Bronze: filled circle + count
+  uint16_t COLOR_BRONZE = matrix.color565(205, 127, 50);
+  matrix.fillCircle(46, 14, 2, COLOR_BRONZE);
+  matrix.setTextColor(COLOR_BRONZE);
+  matrix.setCursor(51, 11);
   matrix.print(usaBronze);
 
   // Row 3: Total
-  matrix.setTextColor(COLOR_GREEN);
+  matrix.setTextColor(COLOR_WHITE);
   matrix.setCursor(2, 21);
-  matrix.print("Total: ");
+  matrix.print("TOTAL ");
+  matrix.setTextColor(COLOR_GREEN);
   matrix.print(usaGold + usaSilver + usaBronze);
 
   matrix.show();
