@@ -24,7 +24,7 @@ DNSServer dnsServer;
 bool setupMode = false;
 
 // ===== OTA Update Settings =====
-const char* FIRMWARE_VERSION = "1.4.0";  // Increment this with each release
+const char* FIRMWARE_VERSION = "1.5.0";  // Increment this with each release
 const char* GITHUB_FIRMWARE_URL = "https://github.com/markstamp/MatrixPortal-NFL-Clock/releases/latest/download/firmware.bin";
 unsigned long lastUpdateCheck = 0;
 const unsigned long updateCheckInterval = 21600000; // Check every 6 hours (6 * 60 * 60 * 1000)
@@ -51,7 +51,7 @@ uint8_t clockPin   = 2, latchPin = 47, oePin = 14;
 Adafruit_Protomatter matrix(64, 4, 1, rgbPins, 4, addrPins, clockPin, latchPin, oePin, false);
 
 // ===== Display Modes =====
-enum DisplayMode { CLOCK_WEATHER, NFL_SCORES };
+enum DisplayMode { CLOCK_WEATHER, OLYMPICS_MEDALS, NFL_SCORES };
 DisplayMode currentMode = CLOCK_WEATHER;
 unsigned long modeChangeTime = 0;
 const unsigned long MODE_DURATION = 15000;
@@ -90,6 +90,11 @@ NFLGame games[16];
 int gameCount = 0, currentGameIndex = 0;
 unsigned long lastNFLUpdate = 0;
 const unsigned long nflUpdateInterval = 60000;
+
+// ===== Olympics Data =====
+int usaGold = 0, usaSilver = 0, usaBronze = 0;
+unsigned long lastOlympicsUpdate = 0;
+const unsigned long olympicsUpdateInterval = 600000; // 10 minutes
 
 // ===== Colors =====
 uint16_t COLOR_CYAN, COLOR_YELLOW, COLOR_WHITE, COLOR_GREEN, COLOR_RED, COLOR_BLUE, COLOR_ORANGE, COLOR_PURPLE;
@@ -185,6 +190,8 @@ void drawWeatherIcon();
 void getWeather();
 void getNFLScores();
 void sortGamesByPriority();
+void getOlympicsMedals();
+void displayOlympicsMedals();
 
 // ===== OTA UPDATE FUNCTIONS =====
 
@@ -384,8 +391,9 @@ void setup() {
       configTime(saved_timezone * 3600, 0, "pool.ntp.org");
       delay(2000);
       getWeather();
+      getOlympicsMedals();
       getNFLScores();
-      
+
       // Check for updates on startup
       Serial.println("Checking for firmware updates on startup...");
       checkForOTAUpdate();
@@ -452,7 +460,11 @@ void loop() {
   if (millis() - lastWeatherUpdate > weatherUpdateInterval) {
     getWeather();
   }
-  
+
+  if (millis() - lastOlympicsUpdate > olympicsUpdateInterval) {
+    getOlympicsMedals();
+  }
+
   // Update NFL scores - more frequently during game days
   unsigned long nflCheckInterval = nflUpdateInterval;
   
@@ -507,6 +519,8 @@ void loop() {
       Serial.print(finalGameCount);
       Serial.println(" final [5s])");
       
+    } else if (currentMode == OLYMPICS_MEDALS) {
+      currentModeDuration = 10000; // 10 seconds for Olympics
     } else {
       // CLOCK/WEATHER mode during live games
       if (weatherChanged) {
@@ -517,36 +531,44 @@ void loop() {
     }
   } else {
     // No live games - normal rotation
-    currentModeDuration = 15000; // 15 seconds each
+    if (currentMode == OLYMPICS_MEDALS) {
+      currentModeDuration = 10000; // 10 seconds for Olympics
+    } else {
+      currentModeDuration = 15000; // 15 seconds each
+    }
   }
-  
+
   if (millis() - modeChangeTime > currentModeDuration) {
-    // Switch modes
+    // Switch modes: CLOCK_WEATHER -> OLYMPICS_MEDALS -> NFL_SCORES -> CLOCK_WEATHER
     if (currentMode == CLOCK_WEATHER) {
-      currentMode = NFL_SCORES;
-      currentGameIndex = 0;  // Start at first game when entering NFL mode
+      currentMode = OLYMPICS_MEDALS;
       weatherChanged = false;
+      Serial.println("=== Switching to Olympics Medals ===");
+    } else if (currentMode == OLYMPICS_MEDALS) {
+      currentMode = NFL_SCORES;
+      currentGameIndex = 0;
       Serial.println("=== Switching to NFL Scores ===");
       Serial.print("Will display ");
       Serial.print(gameCount);
       Serial.println(" total games");
     } else {
-      // Only switch back to clock/weather if weather changed OR no live games
+      // From NFL_SCORES, switch back to clock/weather or continue
       if (weatherChanged || !hasLiveGames) {
         currentMode = CLOCK_WEATHER;
         Serial.println("=== Switching to Clock/Weather ===");
       } else {
         // Stay on NFL scores - continue cycling through ALL games
         Serial.println("=== Continuing NFL cycle (no weather change) ===");
-        // DON'T reset currentGameIndex - let it keep cycling
       }
     }
-    
+
     modeChangeTime = millis();
   }
-  
+
   if (currentMode == CLOCK_WEATHER) {
     displayClockAndWeather();
+  } else if (currentMode == OLYMPICS_MEDALS) {
+    displayOlympicsMedals();
   } else {
     displayNFLScores();
   }
@@ -1252,6 +1274,125 @@ void drawTeamBox(const String& team, int x, int y, int width, int height) {
   matrix.setCursor(x + 2, y + 2);
   matrix.print(team);
 }
+
+// ===== OLYMPICS MEDAL FUNCTIONS =====
+
+void getOlympicsMedals() {
+  HTTPClient http;
+
+  http.begin("https://www.whereig.com/olympics/winter-olympics/2026-winter-olympics-medal-table-milan-cortina.html");
+  http.setTimeout(10000);
+
+  int httpCode = http.GET();
+
+  if (httpCode == 200) {
+    WiFiClient* stream = http.getStreamPtr();
+    String payload = stream->readString();
+
+    Serial.print("Olympics payload size: ");
+    Serial.println(payload.length());
+
+    // Find "United States" in the HTML table
+    int usaPos = payload.indexOf("United States");
+    if (usaPos == -1) {
+      Serial.println("USA not found in Olympics medal table");
+      http.end();
+      lastOlympicsUpdate = millis();
+      return;
+    }
+
+    // After "United States", find the next 3 <td> values (gold, silver, bronze)
+    int searchPos = usaPos;
+
+    // Skip the country <td> closing tag
+    int tdPos = payload.indexOf("<td>", searchPos);
+    if (tdPos == -1 || tdPos > usaPos + 200) {
+      Serial.println("Could not find gold medal <td>");
+      http.end();
+      lastOlympicsUpdate = millis();
+      return;
+    }
+
+    // Parse gold
+    tdPos += 4; // skip "<td>"
+    int tdEnd = payload.indexOf("</td>", tdPos);
+    if (tdEnd != -1) {
+      usaGold = payload.substring(tdPos, tdEnd).toInt();
+    }
+
+    // Parse silver
+    tdPos = payload.indexOf("<td>", tdEnd);
+    if (tdPos != -1) {
+      tdPos += 4;
+      tdEnd = payload.indexOf("</td>", tdPos);
+      if (tdEnd != -1) {
+        usaSilver = payload.substring(tdPos, tdEnd).toInt();
+      }
+    }
+
+    // Parse bronze
+    tdPos = payload.indexOf("<td>", tdEnd);
+    if (tdPos != -1) {
+      tdPos += 4;
+      tdEnd = payload.indexOf("</td>", tdPos);
+      if (tdEnd != -1) {
+        usaBronze = payload.substring(tdPos, tdEnd).toInt();
+      }
+    }
+
+    Serial.print("Olympics medals - G:");
+    Serial.print(usaGold);
+    Serial.print(" S:");
+    Serial.print(usaSilver);
+    Serial.print(" B:");
+    Serial.println(usaBronze);
+
+    lastOlympicsUpdate = millis();
+  } else {
+    Serial.print("Olympics HTTP Error: ");
+    Serial.println(httpCode);
+  }
+
+  http.end();
+}
+
+void displayOlympicsMedals() {
+  matrix.fillScreen(0);
+  matrix.setTextSize(1);
+
+  // Row 1: Header
+  matrix.setTextColor(COLOR_CYAN);
+  matrix.setCursor(2, 1);
+  matrix.print("USA MEDALS");
+
+  // Row 2: Gold count
+  uint16_t COLOR_GOLD = matrix.color565(255, 215, 0);
+  matrix.setTextColor(COLOR_GOLD);
+  matrix.setCursor(2, 11);
+  matrix.print("G:");
+  matrix.print(usaGold);
+
+  // Silver count
+  matrix.setTextColor(COLOR_WHITE);
+  matrix.setCursor(26, 11);
+  matrix.print("S:");
+  matrix.print(usaSilver);
+
+  // Bronze count
+  matrix.setTextColor(COLOR_ORANGE);
+  matrix.setCursor(50, 11);
+  matrix.print("B:");
+  matrix.print(usaBronze);
+
+  // Row 3: Total
+  matrix.setTextColor(COLOR_GREEN);
+  matrix.setCursor(2, 21);
+  matrix.print("Total: ");
+  matrix.print(usaGold + usaSilver + usaBronze);
+
+  matrix.show();
+}
+
 void getNFLScores() {
   HTTPClient http;
   

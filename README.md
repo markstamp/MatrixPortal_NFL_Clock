@@ -4,7 +4,7 @@
 ![ESP32](https://img.shields.io/badge/ESP32-E7352C?style=for-the-badge&logo=espressif&logoColor=white)
 ![License](https://img.shields.io/github/license/markstamp/MatrixPortal-NFL-Clock?style=for-the-badge)
 
-A smart LED matrix display for the Adafruit MatrixPortal S3 (ESP32-S3) showing a clock, weather conditions, and live NFL scores with touchdown animations.
+A smart LED matrix display for the Adafruit MatrixPortal S3 (ESP32-S3) showing a clock, weather conditions, live NFL scores with touchdown animations, and 2026 Winter Olympics medal counts.
 
 ## Features
 
@@ -12,6 +12,7 @@ A smart LED matrix display for the Adafruit MatrixPortal S3 (ESP32-S3) showing a
 - **Weather** - Temperature and conditions from OpenWeatherMap with icons (sun, clouds, rain)
 - **Live NFL Scores** - Real-time scores from ESPN with team colors for all 32 teams
 - **Touchdown Animation** - 5-second celebration with team colors and blinking effect when a touchdown is detected
+- **Olympics Medals** - USA gold, silver, and bronze counts for the 2026 Milano Cortina Winter Olympics
 - **Game Prioritization** - Live games shown for 55s, upcoming for 15s, final for 5s
 - **WiFi Setup Portal** - Customer-friendly captive portal for first-time configuration
 - **OTA Updates** - Automatic firmware updates from GitHub releases (checks every 6 hours)
@@ -48,10 +49,18 @@ A smart LED matrix display for the Adafruit MatrixPortal S3 (ESP32-S3) showing a
 
 - **OpenWeatherMap** - Weather data (`https://api.openweathermap.org`)
 - **ESPN** - NFL scoreboard (`https://site.api.espn.com`)
+- **whereig.com** - Olympics medal table (`https://www.whereig.com`)
 - **GitHub Releases** - OTA firmware updates
 - **NTP** - Time synchronization (`pool.ntp.org`)
 
 ## Changelog
+
+### v1.5.0 - Olympics Medal Display
+
+- Added new display mode showing USA medal counts (Gold, Silver, Bronze, Total) for the 2026 Milano Cortina Winter Olympics
+- Medal data fetched from whereig.com every 10 minutes
+- Display rotation updated: Clock/Weather -> Olympics Medals (10s) -> NFL Scores -> repeat
+- Bumped firmware version to 1.5.0
 
 ### v1.4.0 - Code Review Fixes
 
