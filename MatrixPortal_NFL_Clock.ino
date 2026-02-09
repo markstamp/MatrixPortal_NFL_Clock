@@ -425,6 +425,31 @@ void loop() {
     return;
   }
   
+  // Check for setup button long-press (hold 3 seconds to enter setup mode)
+  static unsigned long setupButtonPressStart = 0;
+  if (digitalRead(SETUP_BUTTON_PIN) == LOW) {
+    if (setupButtonPressStart == 0) {
+      setupButtonPressStart = millis();
+    } else if (millis() - setupButtonPressStart > 3000) {
+      Serial.println("Setup button held for 3 seconds - entering setup mode!");
+      matrix.fillScreen(0);
+      matrix.setTextSize(1);
+      matrix.setTextColor(COLOR_YELLOW);
+      matrix.setCursor(2, 2);
+      matrix.print("Entering");
+      matrix.setCursor(2, 12);
+      matrix.print("Setup...");
+      matrix.show();
+      delay(1000);
+      preferences.end();
+      preferences.begin("settings", false);
+      enterSetupMode();
+      return;
+    }
+  } else {
+    setupButtonPressStart = 0;
+  }
+
   // Check for manual update button press
   static unsigned long lastUpdateButtonPress = 0;
   if (digitalRead(UPDATE_BUTTON_PIN) == LOW) {
@@ -1458,21 +1483,24 @@ void getNFLScores() {
       int shortNameEnd = payload.indexOf("\"", shortNamePos);
       String matchup = payload.substring(shortNamePos, shortNameEnd);
       
-      // Verify this looks like a matchup (has " @ ")
-      if (matchup.indexOf(" @ ") == -1) {
+      // Verify this looks like a matchup (has " @ " or " VS ")
+      int atPos = matchup.indexOf(" @ ");
+      int vsPos = matchup.indexOf(" VS ");
+      if (atPos == -1 && vsPos == -1) {
         searchPos = shortNameEnd;
         Serial.print("  Not a matchup: ");
         Serial.println(matchup);
         continue;
       }
-      
+
       Serial.print("  Found game: ");
       Serial.println(matchup);
-      
-      // Parse away @ home format
-      int atPos = matchup.indexOf(" @ ");
-      String awayTeam = matchup.substring(0, atPos);
-      String homeTeam = matchup.substring(atPos + 3);
+
+      // Parse away @ home or away VS home format
+      int sepPos = (atPos != -1) ? atPos : vsPos;
+      String awayTeam = matchup.substring(0, sepPos);
+      String homeTeam = matchup.substring(sepPos + 4);
+      if (atPos != -1) homeTeam = matchup.substring(atPos + 3);
       
       // Find the competitions array (status is inside it)
       int competitionsPos = payload.indexOf("\"competitions\":[", eventIdPos);
